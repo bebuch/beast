@@ -15,6 +15,7 @@
 #include <array>
 #include <unordered_map>
 #include <vector>
+#include <cstring>
 #include <boost/assert.hpp>
 
 namespace boost {
@@ -30,56 +31,68 @@ struct field_table
 
     struct hash
     {
-        std::size_t
+        std::uint32_t
         operator()(string_view s) const
         {
-            auto const n = s.size();
-            return
-                beast::detail::ascii_tolower(s[0]) *
-                beast::detail::ascii_tolower(s[n/2]) ^
-                beast::detail::ascii_tolower(s[n-1]);   // hist[] = 331, 10, max_load_factor = 0.15f
+            std::uint32_t r = 0;
+
+            std::size_t n = s.size();
+            unsigned char const* p = (unsigned char const*)s.data();
+
+            while( n >= 4 )
+            {
+                std::uint32_t v;
+                std::memcpy( &v, p, 4 );
+
+                r = r * 5 + ( v | 0x20202020 );
+
+                p += 4;
+                n -= 4;
+            }
+
+            while( n > 0 )
+            {
+                r = r * 5 + ( *p | 0x20 );
+
+                ++p;
+                --n;
+            }
+
+            return r;
         }
     };
 
     struct iequal
     {
-        // assumes inputs have equal length
         bool
         operator()(
             string_view lhs,
             string_view rhs) const
         {
+            auto n = lhs.size();
+            if( n != rhs.size() ) return false;
+
             auto p1 = lhs.data();
             auto p2 = rhs.data();
-            auto pend = p1 + lhs.size();
-            char a, b;
-            while(p1 < pend)
-            {
-                a = *p1++;
-                b = *p2++;
-                if(a != b)
-                    goto slow;
-            }
-            return true;
+            if( std::memcmp( p1, p2, n ) == 0 ) return true;
 
-            while(p1 < pend)
+            for( std::size_t i = 0; i < n; ++i )
             {
-            slow:
-                if( beast::detail::ascii_tolower(a) !=
-                    beast::detail::ascii_tolower(b))
+                if( beast::detail::ascii_tolower( p1[i] ) != beast::detail::ascii_tolower( p2[i] ) )
+                {
                     return false;
-                a = *p1++;
-                b = *p2++;
+                }
             }
+
             return true;
         }
     };
 
-    using map_type = std::unordered_map<
-        string_view, field, hash, iequal>;
-
     array_type by_name_;
-    std::vector<map_type> by_size_;
+
+    enum { N = 5155 };
+    unsigned char map_[ N ][ 2 ];
+
 /*
     From:
     
@@ -442,58 +455,62 @@ struct field_table
             "Xref"
         }})
     {
-        // find the longest field length
-        std::size_t high = 0;
-        for(auto const& s : by_name_)
-            if(high < s.size())
-                high = s.size();
-        // build by_size map
-        // skip field::unknown
-        by_size_.resize(high + 1);
-        for(auto& map : by_size_)
-            map.max_load_factor(.15f);
-        for(std::size_t i = 1;
-            i < by_name_.size(); ++i)
+        for( int i = 1, n = 256; i < n; ++i )
         {
-            auto const& s = by_name_[i];
-            by_size_[s.size()].emplace(
-                s, static_cast<field>(i));
+            auto sv = by_name_[ i ];
+
+            auto h = hash()( sv );
+            auto j = h % N;
+
+            BOOST_ASSERT( map_[ j ][ 0 ] == 0 );
+
+            map_[ j ][ 0 ] = i;
         }
 
-#if 0
-        // This snippet calculates the performance
-        // of the hash function and map settings
+        for( int i = 256, n = by_name_.size(); i < n; ++i )
         {
-            std::vector<std::size_t> hist;
-            for(auto const& map : by_size_)
-            {
-                for(std::size_t i = 0; i < map.bucket_count(); ++i)
-                {
-                    auto const n = map.bucket_size(i);
-                    if(n > 0)
-                    {
-                        if(hist.size() < n)
-                            hist.resize(n);
-                        ++hist[n-1];
-                    }
-                }
-            }
+            auto sv = by_name_[ i ];
+
+            auto h = hash()( sv );
+            auto j = h % N;
+
+            BOOST_ASSERT( map_[ j ][ 1 ] == 0 );
+
+            map_[ j ][ 1 ] = i - 255;
         }
-#endif
     }
 
     field
     string_to_field(string_view s) const
     {
-        if(s.size() >= by_size_.size())
+        auto h = hash()( s );
+        auto j = h % N;
+
+        int i = map_[ j ][ 0 ];
+
+        string_view s2 = by_name_[ i ];
+
+        if( i != 0 && iequal()( s, s2 ) )
+        {
+            return static_cast<field>( i );
+        }
+
+        i = map_[ j ][ 1 ];
+
+        if( i == 0 ) return field::unknown;
+
+        i += 255;
+
+        s2 = by_name_[ i ];
+
+        if( iequal()( s, s2 ) )
+        {
+            return static_cast<field>( i );
+        }
+        else
+        {
             return field::unknown;
-        auto const& map = by_size_[s.size()];
-        if(map.empty())
-            return field::unknown;
-        auto it = map.find(s);
-        if(it == map.end())
-            return field::unknown;
-        return it->second;
+        }
     }
 
     //
