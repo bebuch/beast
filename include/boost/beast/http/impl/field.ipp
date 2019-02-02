@@ -74,14 +74,21 @@ struct field_table
 
             auto p1 = lhs.data();
             auto p2 = rhs.data();
-            if( std::memcmp( p1, p2, n ) == 0 ) return true;
 
-            for( std::size_t i = 0; i < n; ++i )
+            for( ; n >= 4; p1 += 4, p2 += 4, n -= 4 )
             {
-                if( beast::detail::ascii_tolower( p1[i] ) != beast::detail::ascii_tolower( p2[i] ) )
-                {
-                    return false;
-                }
+                std::uint32_t v1;
+                std::memcpy( &v1, p1, 4 );
+
+                std::uint32_t v2;
+                std::memcpy( &v2, p2, 4 );
+
+                if( ( v1 ^ v2 ) & 0xDFDFDFDF ) return false;
+            }
+
+            for( ; n; ++p1, ++p2, --n )
+            {
+                if( ( *p1 ^ *p2 ) & 0xDF ) return false;
             }
 
             return true;
