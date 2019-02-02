@@ -98,7 +98,7 @@ struct field_table
     array_type by_name_;
 
     enum { N = 5155 };
-    unsigned char map_[ N ][ 2 ];
+    unsigned char map_[ N ][ 2 ] = {};
 
 /*
     From:
